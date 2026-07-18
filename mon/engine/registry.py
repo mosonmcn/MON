@@ -1,11 +1,9 @@
 """Analyzer registry.
 
-The Dispatcher never has an ``if action == "api": ... elif action == "forms":
-...`` chain. Instead every analyzer registers itself against an action name
-here, once, at import time. Adding a new analyzer (e.g. a future
-``GraphQLAnalyzer``) means calling :func:`register_action` -- nothing in
-:mod:`mon.engine.inspector`, :mod:`mon.engine.resolver`, or
-:mod:`mon.engine.dispatcher` needs to change.
+The Dispatcher never has an if/elif chain keyed on action name. Every
+analyzer registers itself against an action name here, once, at import
+time. Adding a new analyzer means calling register_action() -- nothing in
+inspector.py / resolver.py / dispatcher.py needs to change.
 """
 
 from __future__ import annotations
@@ -37,10 +35,6 @@ class AnalyzerRegistry:
         return sorted(self._analyzers)
 
 
-# One process-wide registry. Analyzer modules call register_action() at
-# import time (see mon/analyzers/__init__.py), so simply importing
-# mon.analyzers is enough to populate this before the resolver/dispatcher
-# ever need it.
 registry = AnalyzerRegistry()
 
 

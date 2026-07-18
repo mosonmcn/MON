@@ -1,13 +1,6 @@
-"""Progress reporting.
-
-Per the spec: *"Ba modules ne suke yin print ba"* (modules never print) --
-that rule is about ANALYZERS, which stay completely silent and only emit
-events. ProgressManager is the one deliberate exception: its entire job is
-turning those events into visible output for the person running the
-inspection, so it prints directly rather than going through Python's
-``logging`` module (which is silent unless the caller has configured a
-handler/level themselves -- a footgun for something meant to give live,
-no-setup-required feedback).
+"""Progress reporting -- the one deliberate exception to "analyzers never
+print": this turns EventBus events into visible console output. Everything
+else stays completely silent when config.response is False.
 """
 
 from __future__ import annotations
@@ -24,68 +17,50 @@ from mon.engine.events import (
 )
 
 _STAGE_LABELS: dict[str, str] = {
-    "crawler": "Crawling",
-    "html": "Parsing HTML",
-    "javascript": "Analyzing JavaScript",
-    "forms": "Analyzing forms",
-    "api": "Reconstructing API endpoints",
+    "crawler": "Fetching pages",
+    "html": "Scanning HTML for links",
+    "javascript": "Reverse-engineering JS API calls",
+    "api": "Live-verifying API endpoints",
     "routes": "Building route map",
-    "assets": "Cataloguing assets",
-    "metadata": "Extracting metadata",
-    "technology": "Fingerprinting technology",
-    "server_info": "Inspecting server",
-    "relationships": "Building relationship graph",
-    "explorer": "Generating explorer",
+    "assets": "Saving static assets",
+    "explorer": "Generating explorer map",
 }
 
 
 class ProgressManager:
-    """Attaches live, human-readable console output to an :class:`EventBus`.
-
-    Only active when ``enabled=True`` (wired to ``InspectConfig.response`` in
-    the SDK) -- when disabled, nothing subscribes and the whole inspection
-    runs completely silently, exactly like calling a library should.
-    """
-
     def __init__(self, event_bus: EventBus, enabled: bool = False) -> None:
         self.enabled = enabled
         self._pages_downloaded = 0
         if not enabled:
             return
+        event_bus.subscribe(INSPECTION_STARTED, self._on_started)
+        event_bus.subscribe(INSPECTION_COMPLETED, self._on_completed)
+        event_bus.subscribe(ANALYZER_BEFORE_RUN, self._on_before)
+        event_bus.subscribe(ANALYZER_AFTER_RUN, self._on_after)
+        event_bus.subscribe(ANALYZER_FAILED, self._on_failed)
+        event_bus.subscribe(PAGE_DOWNLOADED, self._on_page)
+        event_bus.subscribe(PAGE_SKIPPED, self._on_skip)
 
-        event_bus.subscribe(INSPECTION_STARTED, self._on_inspection_started)
-        event_bus.subscribe(INSPECTION_COMPLETED, self._on_inspection_completed)
-        event_bus.subscribe(ANALYZER_BEFORE_RUN, self._on_analyzer_before_run)
-        event_bus.subscribe(ANALYZER_AFTER_RUN, self._on_analyzer_after_run)
-        event_bus.subscribe(ANALYZER_FAILED, self._on_analyzer_failed)
-        event_bus.subscribe(PAGE_DOWNLOADED, self._on_page_downloaded)
-        event_bus.subscribe(PAGE_SKIPPED, self._on_page_skipped)
+    def _on_started(self, **payload: object) -> None:
+        print(f"[+] Launching Ultra-Duty AI Reverse Engine for -> https://{payload.get('domain')}")
 
-    def _on_inspection_started(self, **payload: object) -> None:
-        print(f"[MON] Inspecting {payload.get('domain')} ...", flush=True)
+    def _on_completed(self, **payload: object) -> None:
+        print("[✔ DONE] Inspection complete. Output saved.")
 
-    def _on_inspection_completed(self, **payload: object) -> None:
-        print("[MON] Done. Output saved.", flush=True)
-
-    def _on_analyzer_before_run(self, **payload: object) -> None:
+    def _on_before(self, **payload: object) -> None:
         name = str(payload.get("analyzer"))
-        print(f"[MON] {_STAGE_LABELS.get(name, name)}...", flush=True)
+        print(f"[~] {_STAGE_LABELS.get(name, name)}...")
 
-    def _on_analyzer_after_run(self, **payload: object) -> None:
-        name = str(payload.get("analyzer"))
+    def _on_after(self, **payload: object) -> None:
         summary = payload.get("summary")
         if summary:
-            print(f"[MON]   -> {summary}", flush=True)
-        else:
-            print(f"[MON]   -> {name} done", flush=True)
+            print(f"    -> {summary}")
 
-    def _on_analyzer_failed(self, **payload: object) -> None:
-        print(f"[MON] ⚠ {payload.get('analyzer')} failed: {payload.get('error')}", flush=True)
+    def _on_failed(self, **payload: object) -> None:
+        print(f"[⚠] {payload.get('analyzer')} failed: {payload.get('error')}")
 
-    def _on_page_downloaded(self, **payload: object) -> None:
-        self._pages_downloaded += 1
-        if self._pages_downloaded % 5 == 0:
-            print(f"[MON]   ... {self._pages_downloaded} pages downloaded so far", flush=True)
+    def _on_page(self, **payload: object) -> None:
+        print(f"   [📥 FETCHING] -> {payload.get('path')}")
 
-    def _on_page_skipped(self, **payload: object) -> None:
-        print(f"[MON]   skipped {payload.get('path')} (status={payload.get('status_code')})", flush=True)
+    def _on_skip(self, **payload: object) -> None:
+        print(f"   [❌ FAILED] {payload.get('path')} -> HTTP {payload.get('status_code')}")
