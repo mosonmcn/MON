@@ -5,10 +5,11 @@ from dataclasses import dataclass
 
 @dataclass(slots=True)
 class Route:
-    """A single entry in the frontend route map (produced by RoutesAnalyzer)."""
+    """One entry in the explorer / route map (a frontend page or a
+    discovered backend endpoint)."""
 
     path: str
     file: str
     type: str
+    format: str = ""
     title: str | None = None
-    is_directory: bool = False
