@@ -1,9 +1,4 @@
-"""Public SDK.
-
-Per the spec: *"The framework exposes only one public function."* Everything
-else in ``mon`` is an implementation detail callers should never need to
-import directly.
-"""
+"""Public SDK -- the framework exposes one public function."""
 
 from __future__ import annotations
 
@@ -18,66 +13,45 @@ def inspect(
     domain: str,
     action: str | list[str] = "all_data",
     profile: str = "balanced",
-    file_type: str = "all",
     max_page: int | str = "all",
-    allowed_files: str = "all",
-    output_dir: str | Path = "./output",
+    output_dir: str | Path = "./data",
     project_name: str | None = None,
-    output_format: str = "python",
-    response: bool | str = False,
-    timeout: int = 15,
+    output_format: str = "json",
+    response: bool = True,
+    timeout: int = 10,
     save: bool = True,
-    overwrite: bool = False,
-    verify_ssl: bool = True,
-    unique_folder: bool = False,
+    verify_live_apis: bool = True,
 ) -> InspectResult:
-    """Inspect a website and reconstruct its frontend/backend structure.
+    """Inspect a website and reconstruct its frontend/backend structure,
+    using cloner's original fetch logic for every network call.
 
     Args:
-        domain: Target domain, with or without a scheme (e.g. ``"example.com"``).
-        action: One action name, or a list of them. Built-in leaf actions:
-            crawler, html, javascript, forms, api, routes, assets, metadata,
-            technology, server_info, relationships, explorer. Built-in
-            composite actions: all_data, frontend, backend, api_spec,
-            explorer_visual, cloning.
-        profile: "fast" | "balanced" | "deep" -- controls crawl depth/breadth
-            and whether live API verification runs.
-        file_type: Reserved for future asset-type filtering.
+        domain: Target domain, with or without a scheme.
+        action: One action name or list of them. Leaf actions: crawler,
+            html, javascript, api, routes, assets, explorer. Composite:
+            all_data, api_spec, explorer_visual, cloning.
+        profile: "fast" | "balanced" | "deep".
         max_page: Max pages to crawl, or "all" to use the profile's default.
-        allowed_files: Reserved for future crawl-scope filtering.
-        output_dir: Base directory for saved output (only used if ``save=True``).
-        project_name: Subfolder name under ``output_dir``; defaults to ``domain``.
-        output_format: "python" | "json" | "markdown" | "html" | "yaml".
-        response: Falsy for silent operation; truthy (e.g. ``"info"``) to log
-            human-readable progress as the inspection runs.
+        output_dir: Base directory for saved output.
+        project_name: Subfolder name under output_dir; defaults to domain.
+        output_format: "json" | "markdown".
+        response: Whether to print live progress (cloner-style log lines).
         timeout: Per-request timeout in seconds.
-        save: Whether to write the result to ``output_dir`` at all.
-        overwrite: Whether an existing output file may be overwritten.
-        verify_ssl: Whether to verify TLS certificates.
-        unique_folder: If True, never merge into an existing output folder --
-            allocate a fresh <name>_2, <name>_3, ... folder instead, matching
-            a snapshot-per-run workflow rather than an accumulating one.
-
-    Returns:
-        An :class:`~mon.models.result.InspectResult`.
+        save: Whether to write output to disk at all.
+        verify_live_apis: Whether to live-verify reconstructed endpoints
+            against the real server (cloner's api_verifier.py logic).
     """
     config = InspectConfig(
         domain=domain,
         action=action,
         profile=profile,
-        file_type=file_type,
         max_page=max_page,
-        allowed_files=allowed_files,
         output_dir=Path(output_dir),
         project_name=project_name,
         output_format=output_format,
         response=response,
         timeout=timeout,
         save=save,
-        overwrite=overwrite,
-        verify_ssl=verify_ssl,
-        unique_folder=unique_folder,
+        verify_live_apis=verify_live_apis,
     )
-
-    result = Inspector(config).run()
-    return result
+    return Inspector(config).run()

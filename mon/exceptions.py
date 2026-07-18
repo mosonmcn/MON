@@ -1,15 +1,16 @@
-"""Exception hierarchy for the MON engine.
+"""Exception hierarchy for the cloner/MON engine.
 
-All errors raised anywhere inside the mon package inherit from :class:`MonError`
-so callers can catch a single base class if they don't care about the exact
-failure mode.
+Every error raised anywhere in the ``mon`` package inherits from
+:class:`MonError`, so callers can catch one base class if they don't care
+about the exact failure mode. Structure copied from MON's original
+exception design.
 """
 
 from __future__ import annotations
 
 
 class MonError(Exception):
-    """Base class for every exception raised by MON."""
+    """Base class for every exception raised by this engine."""
 
 
 class ConfigError(MonError):
@@ -17,11 +18,7 @@ class ConfigError(MonError):
 
 
 class ResolverError(MonError):
-    """Raised when the dependency resolver cannot build a valid pipeline.
-
-    Typical causes: an unknown action name, or a circular dependency between
-    two or more analyzers.
-    """
+    """Raised when the dependency resolver cannot build a valid pipeline."""
 
 
 class RegistryError(MonError):
@@ -29,12 +26,8 @@ class RegistryError(MonError):
 
 
 class AnalyzerError(MonError):
-    """Raised when an analyzer fails during ``before_run``/``run``/``after_run``.
-
-    The dispatcher wraps the analyzer's own exception in this type so the
-    inspection pipeline always reports failures using one consistent shape,
-    regardless of what the individual analyzer raised internally.
-    """
+    """Wraps whatever an analyzer's own run() raised, so every failure the
+    dispatcher reports has one consistent shape."""
 
     def __init__(self, analyzer_name: str, original: Exception) -> None:
         self.analyzer_name = analyzer_name
@@ -43,7 +36,7 @@ class AnalyzerError(MonError):
 
 
 class NetworkError(MonError):
-    """Raised for unrecoverable network failures (after retries are exhausted)."""
+    """Raised for unrecoverable network failures."""
 
 
 class ExportError(MonError):
