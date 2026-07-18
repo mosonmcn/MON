@@ -1,140 +1,115 @@
+"""ApiAnalyzer -- builds Endpoint objects from context.raw_api_spec
+(JavascriptAnalyzer's output) and, when the profile enables it, live-
+verifies each one against the real server.
+
+Live verification is CLONER'S ORIGINAL api_verifier.py logic
+(live_sniff_response), ported to use context.fetcher.post/get instead of
+bare requests calls, so it still goes through the same fetch path as
+everything else while keeping cloner's exact mock-payload heuristics.
+"""
+
 from __future__ import annotations
 
-from urllib.parse import urljoin
-
 from mon.analyzers.base import BaseAnalyzer
-from mon.constants import ACTION_FORMS, ACTION_JAVASCRIPT
+from mon.constants import ACTION_API, ACTION_CRAWLER, ACTION_JAVASCRIPT
 from mon.engine.context import InspectContext
-from mon.exceptions import NetworkError
 from mon.models.endpoint import Confidence, Endpoint
-from mon.models.form import Form
-from mon.models.script import ApiCallSite
-
-_MOCK_VALUES_BY_KEY_HINT: dict[str, str] = {
-    "email": "test@example.com",
-    "phone": "08010000000",
-    "amount": "100",
-    "password": "Password123!",
-    "username": "testuser",
-    "token": "sample-token",
-}
 
 
-def _mock_value_for(key: str) -> str:
-    lower = key.lower()
-    for hint, value in _MOCK_VALUES_BY_KEY_HINT.items():
-        if hint in lower:
-            return value
-    return "sample_value"
+def _build_mock_payload(method: str, payload_keys: list[str]) -> dict:
+    """Cloner's original mock payload heuristic from api_verifier.py."""
+    mock_payload: dict = {}
+    if method.upper() == "POST" and payload_keys:
+        for key in payload_keys:
+            lowered = key.lower()
+            if "id" in lowered or "number" in lowered or "bvn" in lowered or "nin" in lowered:
+                mock_payload[key] = "1234567890"
+            elif "amount" in lowered or "price" in lowered or "balance" in lowered:
+                mock_payload[key] = 1000
+            else:
+                mock_payload[key] = "test_data"
+    return mock_payload
+
+
+def _live_sniff_response(context: InspectContext, route: str, method: str, payload_keys: list[str]):
+    """Cloner's live_sniff_response, using context.fetcher (same headers/
+    timeout family) instead of a bare requests call."""
+    base_url = context.config.base_url
+    if not route.startswith("http"):
+        if base_url.endswith("/") and route.startswith("/"):
+            full_url = base_url + route[1:]
+        elif not base_url.endswith("/") and not route.startswith("/"):
+            full_url = base_url + "/" + route
+        else:
+            full_url = base_url + route
+    else:
+        full_url = route
+
+    mock_payload = _build_mock_payload(method, payload_keys)
+
+    if method.upper() == "POST":
+        response = context.fetcher.post(full_url, json=mock_payload)
+    else:
+        response = context.fetcher.get(full_url)
+
+    ctype = response.content_type
+    if "application/json" in ctype or "text/json" in ctype:
+        try:
+            import json
+            json_data = json.loads(response.text)
+            if isinstance(json_data, list) and len(json_data) > 0:
+                return json_data[0], ctype
+            return json_data, ctype
+        except Exception:
+            return {"error": "Failed to parse returned JSON string"}, ctype
+    else:
+        return {"raw_non_json_sample": response.text[:200]}, ctype
 
 
 class ApiAnalyzer(BaseAnalyzer):
-    """Reconstructs full :class:`~mon.models.endpoint.Endpoint` objects from
-    JS call sites, cross-referenced against forms, and optionally live-
-    verified against the real server (profile-dependent).
-    """
-
-    name = "api"
-    description = "Reconstruct endpoints from JS call sites, cross-referenced with forms."
-    priority = 40
-    dependencies: tuple[str, ...] = (ACTION_JAVASCRIPT, ACTION_FORMS)
+    name = ACTION_API
+    description = "Builds Endpoint objects from JS static analysis, optionally live-verified."
+    priority = 30
+    dependencies: tuple[str, ...] = (ACTION_CRAWLER, ACTION_JAVASCRIPT)
 
     def run(self, context: InspectContext) -> None:
-        merged: dict[tuple[str, str], Endpoint] = {}
+        live_verify = context.config.live_verify_enabled
 
-        for call in context.api_call_sites:
-            key = (call.endpoint_path, call.http_method)
-            endpoint = merged.get(key)
-            if endpoint is None:
-                endpoint = self._build_endpoint(call)
-                merged[key] = endpoint
-            else:
-                self._merge_into(endpoint, call)
+        for route, spec in context.raw_api_spec.items():
+            reasons = ["Discovered via static JS analysis (apiCall/fetch call site)"]
+            score = 40
+            if spec.get("guessed_payload_keys"):
+                reasons.append("Payload keys matched from FormData/JSON body")
+                score += 15
+            if spec.get("js_response_reading_keys"):
+                reasons.append("Success/error branches detected in JS")
+                score += 15
 
-        for endpoint in merged.values():
-            matching_form = self._match_form(endpoint, context.forms)
-            if matching_form:
-                endpoint.related_form = matching_form.id or matching_form.action
-                for field_name in matching_form.field_names:
-                    if field_name not in endpoint.request_schema:
-                        endpoint.request_schema[field_name] = "TYPE_UNKNOWN"
-                endpoint.confidence.add(15, f"Matched to HTML form '{matching_form.action}'")
+            endpoint = Endpoint(
+                url=route,
+                method=spec.get("method", "GET"),
+                function_purpose=spec.get("function_purpose", "unknown_function"),
+                expected_payload_format=spec.get("expected_payload_format", "Raw JSON (application/json)"),
+                guessed_payload_keys=spec.get("guessed_payload_keys", []),
+                js_response_reading_keys=spec.get("js_response_reading_keys", []),
+                response_schema=spec.get("extracted_response_schema_from_js", {}),
+                raw_js_context=spec.get("raw_js_context", ""),
+            )
 
-            if context.config.live_verify_enabled:
-                self._live_verify(context, endpoint)
+            if live_verify:
+                sample, ctype = _live_sniff_response(
+                    context, route, endpoint.method, endpoint.guessed_payload_keys
+                )
+                endpoint.live_verified = "connection_error" not in sample
+                endpoint.live_response_sample = sample
+                endpoint.live_content_type = ctype
+                if endpoint.live_verified:
+                    reasons.append("Live-verified against server")
+                    score += 20
 
-        context.endpoints = list(merged.values())
-
-    # ------------------------------------------------------------------ #
-
-    def _build_endpoint(self, call: ApiCallSite) -> Endpoint:
-        confidence = Confidence(score=0, reasons=[])
-        confidence.add(40, f"Detected via {call.call_style} call in JavaScript")
-        if call.branch_split_detected:
-            confidence.add(15, "Success/error branches detected in JS")
-        if call.payload_keys:
-            confidence.add(10, "Payload keys extracted from JS")
-        if call.response_variable_names:
-            confidence.add(10, "Response variable identified in JS (name-agnostic detection)")
-
-        return Endpoint(
-            url=call.endpoint_path,
-            method=call.http_method,
-            request_schema={k: "TYPE_UNKNOWN" for k in call.payload_keys},
-            response_schema=call.success_schema,
-            error_schema=call.error_schema,
-            related_html=call.page_url,
-            related_javascript=call.script_src or call.page_url,
-            confidence=confidence,
-        )
-
-    def _merge_into(self, endpoint: Endpoint, call: ApiCallSite) -> None:
-        for k in call.payload_keys:
-            endpoint.request_schema.setdefault(k, "TYPE_UNKNOWN")
-        endpoint.response_schema = {**call.success_schema, **endpoint.response_schema}
-        endpoint.error_schema = {**call.error_schema, **endpoint.error_schema}
-
-    @staticmethod
-    def _match_form(endpoint: Endpoint, forms: list[Form]) -> Form | None:
-        for form in forms:
-            action_path = form.action.split("?")[0]
-            if action_path and (action_path in endpoint.url or endpoint.url in action_path):
-                return form
-        return None
-
-    def _live_verify(self, context: InspectContext, endpoint: Endpoint) -> None:
-        if endpoint.method not in ("POST", "PUT", "PATCH", "GET"):
-            return
-
-        full_url = urljoin(context.config.base_url, endpoint.url)
-        mock_payload = {k: _mock_value_for(k) for k in endpoint.request_schema}
-
-        try:
-            if endpoint.method == "GET":
-                response = context.fetcher.get(full_url)
-            else:
-                # Try JSON first; many modern APIs expect it.
-                response = context.fetcher.post(full_url, json=mock_payload)
-                if response.status_code in (400, 415, 422) and mock_payload:
-                    # Fall back to application/x-www-form-urlencoded -- common
-                    # for classic PHP backends reading $_POST directly.
-                    response = context.fetcher.post(full_url, data=mock_payload)
-        except NetworkError as exc:
-            context.warn(f"Live verification failed for {endpoint.url}: {exc}")
-            return
-
-        endpoint.live_verified = True
-        endpoint.payload = mock_payload
-        if "json" in response.content_type:
-            try:
-                import json
-                endpoint.live_sample_response = json.loads(response.text)
-            except ValueError:
-                endpoint.live_sample_response = response.text[:500]
-        else:
-            endpoint.live_sample_response = response.text[:500]
-
-        endpoint.confidence.add(20, f"Live-verified against server (HTTP {response.status_code})")
+            endpoint.confidence = Confidence(score=min(score, 100), reasons=reasons)
+            context.endpoints.append(endpoint)
 
     def summary(self, context: InspectContext) -> str | None:
-        return f"endpoints {len(context.endpoints)}"
+        verified = sum(1 for e in context.endpoints if e.live_verified)
+        return f"endpoints {len(context.endpoints)} (live-verified {verified})"
