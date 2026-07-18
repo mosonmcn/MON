@@ -9,7 +9,7 @@ from mon import inspect
 
 if __name__ == "__main__":
     result = inspect(
-        domain="payfluxai.com.ng",
+        domain="example.com",
         action="all_data",
         profile="balanced",
         output_dir="./data",
